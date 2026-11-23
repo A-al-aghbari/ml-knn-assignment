@@ -1,0 +1,75 @@
+name: Check submission
+
+on:
+  pull_request:
+    paths:
+      - "submissions/**"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find your submission folder
+        id: folder
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Files changed in this pull request:"
+          echo "$changed"
+
+          outside=$(echo "$changed" | grep -v '^submissions/' || true)
+          if [ -n "$outside" ]; then
+            echo "::error::Only change files inside your own submissions/ folder. Changed outside it: $outside"
+            exit 1
+          fi
+
+          folders=$(echo "$changed" | cut -d/ -f2 | sort -u)
+          if [ "$(echo "$folders" | wc -l)" -ne 1 ]; then
+            echo "::error::Change exactly one folder. You changed: $folders"
+            exit 1
+          fi
+          if [ "$folders" = "_template" ] || [ "$folders" = "README.md" ]; then
+            echo "::error::Do not edit the template or README. Create your own folder, e.g. submissions/20231234_Ahmed/"
+            exit 1
+          fi
+          if ! echo "$folders" | grep -Eq '^[0-9]+_[A-Za-z-]+$'; then
+            echo "::error::Folder name '$folders' is wrong. Use <studentnumber>_<FirstName>, e.g. 20231234_Ahmed"
+            exit 1
+          fi
+          echo "dir=submissions/$folders" >> "$GITHUB_OUTPUT"
+          echo "Your folder: submissions/$folders"
+
+      - name: Check required files
+        env:
+          DIR: ${{ steps.folder.outputs.dir }}
+        run: |
+          ok=1
+          for f in knn_assignment.ipynb answers.md; do
+            if [ -f "$DIR/$f" ]; then echo "Found $DIR/$f"; else echo "::error::Missing $DIR/$f"; ok=0; fi
+          done
+          [ "$ok" = 1 ]
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Run your notebook from top to bottom
+        env:
+          DIR: ${{ steps.folder.outputs.dir }}
+        run: |
+          jupyter nbconvert --to notebook --execute "$DIR/knn_assignment.ipynb" \
+            --output executed.ipynb --ExecutePreprocessor.timeout=120
+          echo "Your notebook ran without errors."
